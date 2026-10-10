@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: virusprotect
+data:
+  # Environment
+  NODE_ENV: "production"
+  LOG_LEVEL: "info"
+  
+  # AWS Region
+  AWS_REGION: "us-east-1"
+  
+  # Redis Configuration
+  REDIS_HOST: "virusprotect-redis.abc123.0001.use1.cache.amazonaws.com"
+  REDIS_PORT: "6379"
+  REDIS_TLS: "true"
+  
+  # OpenSearch Configuration
+  OPENSEARCH_ENDPOINT: "https://search-virusprotect-abc123.us-east-1.es.amazonaws.com"
+  OPENSEARCH_INDEX_SCANS: "scans"
+  OPENSEARCH_INDEX_SECRETS: "secrets"
+  OPENSEARCH_INDEX_THREATS: "threats"
+  
+  # SQS Configuration
+  SQS_QUEUE_URL: "https://sqs.us-east-1.amazonaws.com/123456789012/virusprotect-scan-queue"
+  SQS_DLQ_URL: "https://sqs.us-east-1.amazonaws.com/123456789012/virusprotect-scan-queue-dlq"
+  SQS_MAX_MESSAGES: "10"
+  SQS_WAIT_TIME_SECONDS: "20"
+  SQS_VISIBILITY_TIMEOUT: "300"
+  
+  # S3 Configuration
+  S3_UPLOAD_BUCKET: "virusprotect-uploads-production"
+  S3_QUARANTINE_BUCKET: "virusprotect-quarantine-production"
+  S3_REPORTS_BUCKET: "virusprotect-reports-production"
+  S3_REGION: "us-east-1"
+  
+  # SNS Configuration
+  SNS_SCAN_ALERTS_ARN: "arn:aws:sns:us-east-1:123456789012:virusprotect-scan-alerts"
+  SNS_CRITICAL_THREATS_ARN: "arn:aws:sns:us-east-1:123456789012:virusprotect-critical-threats"
+  
+  # Application Configuration
+  MAX_FILE_SIZE: "104857600"  # 100MB
+  SCAN_TIMEOUT: "300"  # 5 minutes
+  MAX_CONCURRENT_SCANS: "50"
+  
+  # AI Configuration
+  ENABLE_AI_ANALYSIS: "true"
+  AI_PROVIDER: "bedrock"
+  AI_MODEL: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+  
+  # Feature Flags
+  ENABLE_WEBSOCKET: "true"
+  ENABLE_METRICS: "true"
+  ENABLE_TRACING: "true"
+  
+  # Rate Limiting
+  RATE_LIMIT_WINDOW: "900"  # 15 minutes
+  RATE_LIMIT_MAX_REQUESTS: "100"
+  
+  # Cache Configuration
+  CACHE_TTL_HASH: "86400"  # 24 hours
+  CACHE_TTL_SCAN: "3600"  # 1 hour
+  
+  # Monitoring
+  METRICS_PORT: "9090"
+  HEALTH_CHECK_PATH: "/health"

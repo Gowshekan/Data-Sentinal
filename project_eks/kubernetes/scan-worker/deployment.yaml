@@ -1,0 +1,194 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scan-worker
+  namespace: virusprotect
+  labels:
+    app: scan-worker
+    component: worker
+    version: v1.0.0
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 2
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: scan-worker
+  template:
+    metadata:
+      labels:
+        app: scan-worker
+        component: worker
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      serviceAccountName: app-service-account
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      
+      # Schedule on worker nodes with taint
+      tolerations:
+      - key: "workload"
+        operator: "Equal"
+        value: "scan-processing"
+        effect: "NoSchedule"
+      
+      nodeSelector:
+        workload: "scan-processing"
+      
+      containers:
+      - name: scan-worker
+        image: <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/virusprotect/scan-worker:latest
+        imagePullPolicy: Always
+        
+        ports:
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+        
+        env:
+        # Import all config from ConfigMap
+        - name: NODE_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: NODE_ENV
+        - name: AWS_REGION
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: AWS_REGION
+        - name: SQS_QUEUE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: SQS_QUEUE_URL
+        - name: SQS_MAX_MESSAGES
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: SQS_MAX_MESSAGES
+        - name: SQS_WAIT_TIME_SECONDS
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: SQS_WAIT_TIME_SECONDS
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: REDIS_HOST
+        - name: REDIS_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: REDIS_PORT
+        - name: S3_UPLOAD_BUCKET
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: S3_UPLOAD_BUCKET
+        - name: S3_QUARANTINE_BUCKET
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: S3_QUARANTINE_BUCKET
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: DATABASE_URL
+        - name: VT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: VT_API_KEY
+        - name: OPENSEARCH_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: OPENSEARCH_ENDPOINT
+        - name: OPENSEARCH_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: OPENSEARCH_USERNAME
+        - name: OPENSEARCH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: OPENSEARCH_PASSWORD
+        - name: SCAN_TIMEOUT
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: SCAN_TIMEOUT
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - "pgrep -f worker.js"
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: work
+          mountPath: /app/work
+      
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: work
+        emptyDir:
+          sizeLimit: 1Gi
+      
+      terminationGracePeriodSeconds: 60
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scan-worker-service
+  namespace: virusprotect
+  labels:
+    app: scan-worker
+spec:
+  type: ClusterIP
+  clusterIP: None  # Headless service
+  selector:
+    app: scan-worker
+  ports:
+  - name: metrics
+    port: 9090
+    targetPort: 9090

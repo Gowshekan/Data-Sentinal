@@ -1,0 +1,11 @@
+.git
+.github
+node_modules
+**/node_modules
+client/dist
+server/uploads
+server/quarantine
+server/reports
+*.log
+npm-debug.log*
+project_eks

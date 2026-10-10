@@ -1,0 +1,226 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scan-api
+  namespace: virusprotect
+  labels:
+    app: scan-api
+    component: api
+    version: v1.0.0
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: scan-api
+  template:
+    metadata:
+      labels:
+        app: scan-api
+        component: api
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: app-service-account
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      
+      containers:
+      - name: scan-api
+        image: <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/virusprotect/scan-api:latest
+        imagePullPolicy: Always
+        
+        ports:
+        - name: http
+          containerPort: 5000
+          protocol: TCP
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+        
+        env:
+        # Environment from ConfigMap
+        - name: NODE_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: NODE_ENV
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: LOG_LEVEL
+        - name: AWS_REGION
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: AWS_REGION
+        
+        # Redis Configuration
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: REDIS_HOST
+        - name: REDIS_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: REDIS_PORT
+        
+        # OpenSearch Configuration
+        - name: OPENSEARCH_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: OPENSEARCH_ENDPOINT
+        - name: OPENSEARCH_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: OPENSEARCH_USERNAME
+        - name: OPENSEARCH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: OPENSEARCH_PASSWORD
+        
+        # SQS Configuration
+        - name: SQS_QUEUE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: SQS_QUEUE_URL
+        
+        # S3 Configuration
+        - name: S3_UPLOAD_BUCKET
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: S3_UPLOAD_BUCKET
+        - name: S3_QUARANTINE_BUCKET
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: S3_QUARANTINE_BUCKET
+        - name: S3_REPORTS_BUCKET
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: S3_REPORTS_BUCKET
+        
+        # Database Configuration
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: DATABASE_URL
+        
+        # VirusTotal API Key
+        - name: VT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: VT_API_KEY
+        
+        # JWT Secret
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: JWT_SECRET
+        
+        # Application Configuration
+        - name: MAX_FILE_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: MAX_FILE_SIZE
+        - name: ENABLE_AI_ANALYSIS
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: ENABLE_AI_ANALYSIS
+        
+        # Pod metadata
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 5000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: cache
+          mountPath: /app/.cache
+      
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: cache
+        emptyDir: {}
+      
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - scan-api
+              topologyKey: kubernetes.io/hostname
+      
+      terminationGracePeriodSeconds: 30

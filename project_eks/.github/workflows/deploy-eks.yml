@@ -1,0 +1,187 @@
+name: Deploy to EKS
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'services/**'
+      - 'kubernetes/**'
+      - '.github/workflows/deploy-eks.yml'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: virusprotect-cluster
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+  
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      scan-api: ${{ steps.filter.outputs.scan-api }}
+      scan-worker: ${{ steps.filter.outputs.scan-worker }}
+      search-indexer: ${{ steps.filter.outputs.search-indexer }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: dorny/paths-filter@v2
+        id: filter
+        with:
+          filters: |
+            scan-api:
+              - 'services/scan-api/**'
+              - 'kubernetes/scan-api/**'
+            scan-worker:
+              - 'services/scan-worker/**'
+              - 'kubernetes/scan-worker/**'
+            search-indexer:
+              - 'services/search-indexer/**'
+              - 'kubernetes/search-indexer/**'
+
+  build-and-push:
+    needs: detect-changes
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - name: scan-api
+            changed: ${{ needs.detect-changes.outputs.scan-api }}
+          - name: scan-worker
+            changed: ${{ needs.detect-changes.outputs.scan-worker }}
+          - name: search-indexer
+            changed: ${{ needs.detect-changes.outputs.search-indexer }}
+    
+    steps:
+      - name: Checkout code
+        if: matrix.service.changed == 'true'
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        if: matrix.service.changed == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Login to Amazon ECR
+        if: matrix.service.changed == 'true'
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      
+      - name: Set up Docker Buildx
+        if: matrix.service.changed == 'true'
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Build and push Docker image
+        if: matrix.service.changed == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/${{ matrix.service.name }}
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/virusprotect/${{ matrix.service.name }}:${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/virusprotect/${{ matrix.service.name }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+      
+      - name: Scan Docker image for vulnerabilities
+        if: matrix.service.changed == 'true'
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.ECR_REGISTRY }}/virusprotect/${{ matrix.service.name }}:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+      
+      - name: Upload Trivy scan results
+        if: matrix.service.changed == 'true'
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  deploy-to-eks:
+    needs: [detect-changes, build-and-push]
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+      
+      - name: Update scan-api deployment
+        if: needs.detect-changes.outputs.scan-api == 'true'
+        run: |
+          kubectl set image deployment/scan-api \
+            scan-api=${{ env.ECR_REGISTRY }}/virusprotect/scan-api:${{ github.sha }} \
+            -n virusprotect
+          kubectl rollout status deployment/scan-api -n virusprotect --timeout=5m
+      
+      - name: Update scan-worker deployment
+        if: needs.detect-changes.outputs.scan-worker == 'true'
+        run: |
+          kubectl set image deployment/scan-worker \
+            scan-worker=${{ env.ECR_REGISTRY }}/virusprotect/scan-worker:${{ github.sha }} \
+            -n virusprotect
+          kubectl rollout status deployment/scan-worker -n virusprotect --timeout=5m
+      
+      - name: Update search-indexer deployment
+        if: needs.detect-changes.outputs.search-indexer == 'true'
+        run: |
+          kubectl set image deployment/search-indexer \
+            search-indexer=${{ env.ECR_REGISTRY }}/virusprotect/search-indexer:${{ github.sha }} \
+            -n virusprotect
+          kubectl rollout status deployment/search-indexer -n virusprotect --timeout=5m
+      
+      - name: Verify deployments
+        run: |
+          kubectl get pods -n virusprotect
+          kubectl get svc -n virusprotect
+      
+      - name: Run smoke tests
+        run: |
+          # Get the load balancer URL
+          API_URL=$(kubectl get svc scan-api-service -n virusprotect -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          
+          # Wait for load balancer to be ready
+          echo "Waiting for load balancer..."
+          sleep 30
+          
+          # Health check
+          curl -f http://${API_URL}/health || exit 1
+          echo "✓ Health check passed"
+          
+          # Ready check
+          curl -f http://${API_URL}/ready || exit 1
+          echo "✓ Ready check passed"
+
+  notify:
+    needs: [build-and-push, deploy-to-eks]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Notify on success
+        if: ${{ needs.deploy-to-eks.result == 'success' }}
+        run: |
+          echo "✅ Deployment successful!"
+          echo "Services deployed to EKS cluster: ${{ env.EKS_CLUSTER_NAME }}"
+      
+      - name: Notify on failure
+        if: ${{ needs.deploy-to-eks.result == 'failure' }}
+        run: |
+          echo "❌ Deployment failed!"
+          echo "Check logs for details"
+          exit 1
